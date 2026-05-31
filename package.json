@@ -1,0 +1,8 @@
+{
+  "name": "blaise",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --cwd server dev",
+    "client": "bun run --cwd client dev"
+  }
+}
