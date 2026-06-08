@@ -41,9 +41,13 @@ export function useAudio() {
     sink.connect(ctx.destination);
 
     worklet.port.onmessage = (e: MessageEvent<Float32Array>) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(e.data.buffer);
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const f32 = e.data;
+      const i16 = new Int16Array(f32.length);
+      for (let i = 0; i < f32.length; i++) {
+        i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768));
       }
+      ws.send(i16.buffer);
     };
 
     source.connect(worklet);

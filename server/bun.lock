@@ -1,0 +1,17 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "blaise-server",
+      "dependencies": {
+        "@deepgram/sdk": "^5.4.0",
+      },
+    },
+  },
+  "packages": {
+    "@deepgram/sdk": ["@deepgram/sdk@5.4.0", "", { "dependencies": { "ws": "^8.20.0" } }, "sha512-Xm0lB38VcyJgsXbABhhZWKXJN8jnAVk35YP186Qxiqbfz8GP4wgSEugoovWRhdMeKrbRhN7IVrcbHElVTNSHVw=="],
+
+    "ws": ["ws@8.21.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g=="],
+  }
+}

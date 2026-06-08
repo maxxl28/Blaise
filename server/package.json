@@ -2,5 +2,8 @@
   "name": "blaise-server",
   "scripts": {
     "dev": "bun run --hot src/index.ts"
+  },
+  "dependencies": {
+    "@deepgram/sdk": "^5.4.0"
   }
 }

@@ -1,3 +1,10 @@
+import { DeepgramClient } from '@deepgram/sdk';
+import { openSession } from './session';
+import type { Session } from './session';
+
+const deepgram = new DeepgramClient();
+const sessions = new Map<ServerWebSocket<unknown>, Session>();
+
 const server = Bun.serve({
   port: 3001,
   fetch(req, server) {
@@ -6,20 +13,34 @@ const server = Bun.serve({
   },
   websocket: {
     open(ws) {
-      console.log('[ws] client connected');
+      openSession(ws, () =>
+        deepgram.listen.v1.connect({
+          model: 'nova-2',
+          encoding: 'linear16',
+          sample_rate: 16000,
+          interim_results: true,
+        } as Parameters<typeof deepgram.listen.v1.connect>[0])
+      )
+        .then(session => {
+          sessions.set(ws, session);
+          console.log('[deepgram] ready');
+        })
+        .catch(err => {
+          console.error('[deepgram] failed to connect:', err.message);
+          ws.close();
+        });
     },
     message(ws, message) {
-      const bytes = message instanceof Buffer
-        ? message.byteLength
-        : typeof message === 'string'
-        ? message.length
-        : 0;
-      console.log(`[pcm] ${bytes} bytes`);
+      const session = sessions.get(ws);
+      if (!session) return; // deepgram not ready yet — discard
+      if (message instanceof Buffer) session.send(message);
     },
     close(ws) {
+      sessions.get(ws)?.close();
+      sessions.delete(ws);
       console.log('[ws] client disconnected');
     },
   },
 });
 
-console.log(`Server listening on port ${server.port}`);
+console.log(`Listening on port ${server.port}`);

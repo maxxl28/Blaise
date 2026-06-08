@@ -24,3 +24,28 @@ Latency is critical. Every added ms matters in the STT → Claude → TTS chain.
 - `bun run client` — starts frontend
 - `bun test` — runs tests
 
+## Flow:
+
+ALWAYS RUNNING
+Browser → [WebSocket] → Bun → [WebSocket] → Deepgram
+                                    ↑
+                         transcript events flowing back
+                         is_final:false → ignore
+                         is_final:true  → append to buffer
+                                    |
+                              SILENCE DETECTED
+                                    ↓
+                    Bun → [HTTP] → Claude (streaming)
+                                    ↓
+                    Bun → [HTTP] → OpenAI TTS (streaming)
+                                    ↓
+                    Bun → [WebSocket] → Browser → speakers
+                                    |
+                              done speaking
+                                    ↓
+                         back to passively piping audio
+
+## Current status/tasks:
+
+Get STT (Speech to text) working
+
