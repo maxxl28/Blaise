@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { openSession } from './session';
+import { openSession, speakerSegments } from './session';
 
 function makeMockSocket({ neverOpen = false } = {}) {
   let onMessage: ((data: unknown) => void) | undefined;
@@ -30,6 +30,49 @@ function makeMockSocket({ neverOpen = false } = {}) {
 const noopWs = { send: () => {} };
 const makeWs = () => { const msgs: string[] = []; return { ws: { send: (m: string) => msgs.push(m) }, msgs }; };
 
+// --- speakerSegments unit tests ---
+
+describe('speakerSegments', () => {
+  it('returns empty array for no words', () => {
+    expect(speakerSegments([])).toEqual([]);
+  });
+
+  it('groups single speaker into one segment', () => {
+    const words = [
+      { word: 'hello', speaker: 0 },
+      { word: 'world', speaker: 0 },
+    ];
+    expect(speakerSegments(words)).toEqual([{ speaker: 0, text: 'hello world' }]);
+  });
+
+  it('splits on speaker change', () => {
+    const words = [
+      { word: 'hey', speaker: 0 },
+      { word: 'hi', speaker: 1 },
+      { word: 'there', speaker: 1 },
+    ];
+    expect(speakerSegments(words)).toEqual([
+      { speaker: 0, text: 'hey' },
+      { speaker: 1, text: 'hi there' },
+    ]);
+  });
+
+  it('defaults to speaker 0 when speaker field is undefined', () => {
+    const words = [{ word: 'test' }];
+    expect(speakerSegments(words)).toEqual([{ speaker: 0, text: 'test' }]);
+  });
+
+  it('prefers punctuated_word over word', () => {
+    const words = [
+      { word: 'hello', punctuated_word: 'Hello,', speaker: 0 },
+      { word: 'world', punctuated_word: 'world.', speaker: 0 },
+    ];
+    expect(speakerSegments(words)).toEqual([{ speaker: 0, text: 'Hello, world.' }]);
+  });
+});
+
+// --- openSession integration tests ---
+
 describe('openSession', () => {
   it('resolves when socket opens', async () => {
     const m = makeMockSocket();
@@ -57,25 +100,52 @@ describe('openSession', () => {
     expect(m.sent).toHaveLength(1);
   });
 
-  it('sends final transcript to browser', async () => {
+  it('sends final transcript with speaker to browser', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
     await openSession(ws, () => Promise.resolve(m.socket as any));
 
-    m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: 'hello world' }] }, is_final: true });
+    m.emitMessage({
+      type: 'Results',
+      channel: { alternatives: [{ transcript: 'hello world', words: [
+        { word: 'hello', punctuated_word: 'hello', speaker: 0 },
+        { word: 'world', punctuated_word: 'world', speaker: 0 },
+      ]}] },
+      is_final: true,
+    });
 
     expect(msgs).toHaveLength(1);
-    expect(JSON.parse(msgs[0])).toEqual({ type: 'transcript', text: 'hello world', isFinal: true });
+    expect(JSON.parse(msgs[0])).toEqual({ type: 'transcript', speaker: 0, text: 'hello world', isFinal: true });
   });
 
-  it('sends interim transcript to browser', async () => {
+  it('splits a final result across two speakers into two messages', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
     await openSession(ws, () => Promise.resolve(m.socket as any));
 
-    m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: 'hel' }] }, is_final: false });
+    m.emitMessage({
+      type: 'Results',
+      channel: { alternatives: [{ transcript: 'hey hi there', words: [
+        { word: 'hey', speaker: 0 },
+        { word: 'hi', speaker: 1 },
+        { word: 'there', speaker: 1 },
+      ]}] },
+      is_final: true,
+    });
 
-    expect(JSON.parse(msgs[0])).toMatchObject({ isFinal: false, text: 'hel' });
+    expect(msgs).toHaveLength(2);
+    expect(JSON.parse(msgs[0])).toEqual({ type: 'transcript', speaker: 0, text: 'hey', isFinal: true });
+    expect(JSON.parse(msgs[1])).toEqual({ type: 'transcript', speaker: 1, text: 'hi there', isFinal: true });
+  });
+
+  it('sends interim transcript with null speaker to browser', async () => {
+    const m = makeMockSocket();
+    const { ws, msgs } = makeWs();
+    await openSession(ws, () => Promise.resolve(m.socket as any));
+
+    m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: 'hel', words: [] }] }, is_final: false });
+
+    expect(JSON.parse(msgs[0])).toMatchObject({ speaker: null, isFinal: false, text: 'hel' });
   });
 
   it('ignores non-Results message types', async () => {
@@ -90,12 +160,22 @@ describe('openSession', () => {
     expect(msgs).toHaveLength(0);
   });
 
-  it('ignores empty transcript strings', async () => {
+  it('ignores final results with no words', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
     await openSession(ws, () => Promise.resolve(m.socket as any));
 
-    m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: '' }] }, is_final: true });
+    m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: '', words: [] }] }, is_final: true });
+
+    expect(msgs).toHaveLength(0);
+  });
+
+  it('ignores empty interim transcripts', async () => {
+    const m = makeMockSocket();
+    const { ws, msgs } = makeWs();
+    await openSession(ws, () => Promise.resolve(m.socket as any));
+
+    m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: '', words: [] }] }, is_final: false });
 
     expect(msgs).toHaveLength(0);
   });
