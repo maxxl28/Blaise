@@ -154,8 +154,17 @@ describe('openSession', () => {
     await openSession(ws, () => Promise.resolve(m.socket as any));
 
     m.emitMessage({ type: 'Metadata' });
-    m.emitMessage({ type: 'UtteranceEnd' });
     m.emitMessage({ type: 'SpeechStarted' });
+
+    expect(msgs).toHaveLength(0);
+  });
+
+  it('handles UtteranceEnd without sending a browser message', async () => {
+    const m = makeMockSocket();
+    const { ws, msgs } = makeWs();
+    await openSession(ws, () => Promise.resolve(m.socket as any));
+
+    m.emitMessage({ type: 'UtteranceEnd' });
 
     expect(msgs).toHaveLength(0);
   });

@@ -20,6 +20,8 @@ const server = Bun.serve({
           sample_rate: 16000,
           interim_results: true,
           diarize: true,
+          vad_events: true,
+          utterance_end_ms: 1000,
         } as Parameters<typeof deepgram.listen.v1.connect>[0])
       )
         .then(session => {

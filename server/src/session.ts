@@ -43,6 +43,12 @@ export async function openSession(
       channel?: { alternatives?: { transcript: string; words?: Word[] }[] };
       is_final?: boolean;
     };
+
+    if (msg.type === 'UtteranceEnd') {
+      console.log('[utterance] silence detected');
+      return;
+    }
+
     if (msg.type !== 'Results') return;
     const alt = msg.channel?.alternatives?.[0];
     if (!alt) return;
