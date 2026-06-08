@@ -1,4 +1,5 @@
 import { DeepgramClient } from '@deepgram/sdk';
+import { checkInterjection } from './claude';
 import { openSession } from './session';
 import type { Session } from './session';
 
@@ -22,7 +23,8 @@ const server = Bun.serve({
           diarize: true,
           vad_events: true,
           utterance_end_ms: 1000,
-        } as Parameters<typeof deepgram.listen.v1.connect>[0])
+        } as unknown as Parameters<typeof deepgram.listen.v1.connect>[0]),
+        checkInterjection,
       )
         .then(session => {
           sessions.set(ws, session);

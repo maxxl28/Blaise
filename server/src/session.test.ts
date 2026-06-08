@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { openSession, speakerSegments } from './session';
+import { openSession, speakerSegments, formatSegments } from './session';
+import type { SpeakerSegment } from './session';
+
+const noop = async () => null;
 
 function makeMockSocket({ neverOpen = false } = {}) {
   let onMessage: ((data: unknown) => void) | undefined;
@@ -30,7 +33,25 @@ function makeMockSocket({ neverOpen = false } = {}) {
 const noopWs = { send: () => {} };
 const makeWs = () => { const msgs: string[] = []; return { ws: { send: (m: string) => msgs.push(m) }, msgs }; };
 
-// --- speakerSegments unit tests ---
+function finalResult(words: { word: string; speaker: number }[]) {
+  return { type: 'Results', channel: { alternatives: [{ transcript: words.map(w => w.word).join(' '), words }] }, is_final: true };
+}
+
+// --- formatSegments ---
+
+describe('formatSegments', () => {
+  it('formats speaker segments', () => {
+    const segs: SpeakerSegment[] = [{ speaker: 0, text: 'hello' }, { speaker: 1, text: 'hi' }];
+    expect(formatSegments(segs)).toBe('Speaker 0: hello\nSpeaker 1: hi');
+  });
+
+  it('formats Blaise segments (speaker null)', () => {
+    const segs: SpeakerSegment[] = [{ speaker: null, text: 'interesting point' }];
+    expect(formatSegments(segs)).toBe('Blaise: interesting point');
+  });
+});
+
+// --- speakerSegments ---
 
 describe('speakerSegments', () => {
   it('returns empty array for no words', () => {
@@ -38,19 +59,12 @@ describe('speakerSegments', () => {
   });
 
   it('groups single speaker into one segment', () => {
-    const words = [
-      { word: 'hello', speaker: 0 },
-      { word: 'world', speaker: 0 },
-    ];
+    const words = [{ word: 'hello', speaker: 0 }, { word: 'world', speaker: 0 }];
     expect(speakerSegments(words)).toEqual([{ speaker: 0, text: 'hello world' }]);
   });
 
   it('splits on speaker change', () => {
-    const words = [
-      { word: 'hey', speaker: 0 },
-      { word: 'hi', speaker: 1 },
-      { word: 'there', speaker: 1 },
-    ];
+    const words = [{ word: 'hey', speaker: 0 }, { word: 'hi', speaker: 1 }, { word: 'there', speaker: 1 }];
     expect(speakerSegments(words)).toEqual([
       { speaker: 0, text: 'hey' },
       { speaker: 1, text: 'hi there' },
@@ -58,8 +72,7 @@ describe('speakerSegments', () => {
   });
 
   it('defaults to speaker 0 when speaker field is undefined', () => {
-    const words = [{ word: 'test' }];
-    expect(speakerSegments(words)).toEqual([{ speaker: 0, text: 'test' }]);
+    expect(speakerSegments([{ word: 'test' }])).toEqual([{ speaker: 0, text: 'test' }]);
   });
 
   it('prefers punctuated_word over word', () => {
@@ -71,31 +84,31 @@ describe('speakerSegments', () => {
   });
 });
 
-// --- openSession integration tests ---
+// --- openSession ---
 
 describe('openSession', () => {
   it('resolves when socket opens', async () => {
     const m = makeMockSocket();
-    const session = await openSession(noopWs, () => Promise.resolve(m.socket as any));
+    const session = await openSession(noopWs, () => Promise.resolve(m.socket as any), noop);
     expect(session).toBeDefined();
   });
 
   it('rejects on timeout', async () => {
     const m = makeMockSocket({ neverOpen: true });
     await expect(
-      openSession(noopWs, () => Promise.resolve(m.socket as any), 20)
+      openSession(noopWs, () => Promise.resolve(m.socket as any), noop, 20)
     ).rejects.toThrow('timeout');
   });
 
   it('rejects if createSocket throws', async () => {
     await expect(
-      openSession(noopWs, () => Promise.reject(new Error('auth failed')))
+      openSession(noopWs, () => Promise.reject(new Error('auth failed')), noop)
     ).rejects.toThrow('auth failed');
   });
 
   it('forwards audio to Deepgram after open', async () => {
     const m = makeMockSocket();
-    const session = await openSession(noopWs, () => Promise.resolve(m.socket as any));
+    const session = await openSession(noopWs, () => Promise.resolve(m.socket as any), noop);
     session.send(new Uint8Array([1, 2, 3]).buffer);
     expect(m.sent).toHaveLength(1);
   });
@@ -103,16 +116,12 @@ describe('openSession', () => {
   it('sends final transcript with speaker to browser', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
 
-    m.emitMessage({
-      type: 'Results',
-      channel: { alternatives: [{ transcript: 'hello world', words: [
-        { word: 'hello', punctuated_word: 'hello', speaker: 0 },
-        { word: 'world', punctuated_word: 'world', speaker: 0 },
-      ]}] },
-      is_final: true,
-    });
+    m.emitMessage(finalResult([
+      { word: 'hello', speaker: 0 },
+      { word: 'world', speaker: 0 },
+    ]));
 
     expect(msgs).toHaveLength(1);
     expect(JSON.parse(msgs[0])).toEqual({ type: 'transcript', speaker: 0, text: 'hello world', isFinal: true });
@@ -121,17 +130,13 @@ describe('openSession', () => {
   it('splits a final result across two speakers into two messages', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
 
-    m.emitMessage({
-      type: 'Results',
-      channel: { alternatives: [{ transcript: 'hey hi there', words: [
-        { word: 'hey', speaker: 0 },
-        { word: 'hi', speaker: 1 },
-        { word: 'there', speaker: 1 },
-      ]}] },
-      is_final: true,
-    });
+    m.emitMessage(finalResult([
+      { word: 'hey', speaker: 0 },
+      { word: 'hi', speaker: 1 },
+      { word: 'there', speaker: 1 },
+    ]));
 
     expect(msgs).toHaveLength(2);
     expect(JSON.parse(msgs[0])).toEqual({ type: 'transcript', speaker: 0, text: 'hey', isFinal: true });
@@ -141,7 +146,7 @@ describe('openSession', () => {
   it('sends interim transcript with null speaker to browser', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
 
     m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: 'hel', words: [] }] }, is_final: false });
 
@@ -151,7 +156,7 @@ describe('openSession', () => {
   it('ignores non-Results message types', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
 
     m.emitMessage({ type: 'Metadata' });
     m.emitMessage({ type: 'SpeechStarted' });
@@ -159,20 +164,10 @@ describe('openSession', () => {
     expect(msgs).toHaveLength(0);
   });
 
-  it('handles UtteranceEnd without sending a browser message', async () => {
-    const m = makeMockSocket();
-    const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
-
-    m.emitMessage({ type: 'UtteranceEnd' });
-
-    expect(msgs).toHaveLength(0);
-  });
-
   it('ignores final results with no words', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
 
     m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: '', words: [] }] }, is_final: true });
 
@@ -182,7 +177,7 @@ describe('openSession', () => {
   it('ignores empty interim transcripts', async () => {
     const m = makeMockSocket();
     const { ws, msgs } = makeWs();
-    await openSession(ws, () => Promise.resolve(m.socket as any));
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
 
     m.emitMessage({ type: 'Results', channel: { alternatives: [{ transcript: '', words: [] }] }, is_final: false });
 
@@ -191,8 +186,91 @@ describe('openSession', () => {
 
   it('closes the Deepgram socket on session.close()', async () => {
     const m = makeMockSocket();
-    const session = await openSession(noopWs, () => Promise.resolve(m.socket as any));
+    const session = await openSession(noopWs, () => Promise.resolve(m.socket as any), noop);
     session.close();
     expect(m.closed).toBe(true);
+  });
+
+  it('calls checkInterjection with pending segments on UtteranceEnd', async () => {
+    const m = makeMockSocket();
+    const calls: { transcript: string; segments: SpeakerSegment[] }[] = [];
+    const checker = async (t: string, s: SpeakerSegment[]) => { calls.push({ transcript: t, segments: s }); return null; };
+
+    await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
+
+    m.emitMessage(finalResult([{ word: 'hello', speaker: 0 }]));
+    m.emitMessage({ type: 'UtteranceEnd' });
+
+    await Bun.sleep(10);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].transcript).toBe('');
+    expect(calls[0].segments).toEqual([{ speaker: 0, text: 'hello' }]);
+  });
+
+  it('skips UtteranceEnd when no pending segments', async () => {
+    const m = makeMockSocket();
+    const calls: unknown[] = [];
+    const checker = async () => { calls.push(1); return null; };
+
+    await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
+    m.emitMessage({ type: 'UtteranceEnd' });
+
+    await Bun.sleep(10);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('blocks second UtteranceEnd while first is processing (speaking gate)', async () => {
+    const m = makeMockSocket();
+    let resolve!: () => void;
+    const calls: number[] = [];
+    const checker = async () => {
+      calls.push(1);
+      await new Promise<void>(r => { resolve = r; });
+      return null;
+    };
+
+    await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
+
+    m.emitMessage(finalResult([{ word: 'hello', speaker: 0 }]));
+    m.emitMessage({ type: 'UtteranceEnd' });
+    m.emitMessage(finalResult([{ word: 'world', speaker: 0 }]));
+    m.emitMessage({ type: 'UtteranceEnd' }); // should be blocked
+
+    await Bun.sleep(10);
+    expect(calls).toHaveLength(1); // only one call fired
+
+    resolve();
+    await Bun.sleep(10);
+    expect(calls).toHaveLength(1); // second UtteranceEnd was dropped, not queued
+  });
+
+  it('accumulates fullTranscript across multiple checks', async () => {
+    const m = makeMockSocket();
+    const calls: string[] = [];
+    const checker = async (transcript: string) => { calls.push(transcript); return null; };
+
+    await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
+
+    m.emitMessage(finalResult([{ word: 'hello', speaker: 0 }]));
+    m.emitMessage({ type: 'UtteranceEnd' });
+    await Bun.sleep(10);
+
+    m.emitMessage(finalResult([{ word: 'world', speaker: 1 }]));
+    m.emitMessage({ type: 'UtteranceEnd' });
+    await Bun.sleep(10);
+
+    expect(calls[0]).toBe('');
+    expect(calls[1]).toBe('Speaker 0: hello');
+  });
+
+  it('handles UtteranceEnd without sending a browser message', async () => {
+    const m = makeMockSocket();
+    const { ws, msgs } = makeWs();
+    await openSession(ws, () => Promise.resolve(m.socket as any), noop);
+
+    m.emitMessage({ type: 'UtteranceEnd' });
+
+    expect(msgs).toHaveLength(0);
   });
 });
