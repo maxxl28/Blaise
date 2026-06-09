@@ -2,6 +2,7 @@ import { useRef, useState, useCallback } from 'react';
 import processorUrl from '../worklets/pcm-processor.js?url';
 
 const WS_URL = 'ws://localhost:3001';
+const TTS_SAMPLE_RATE = 24000;
 
 export function useAudio() {
   const [isRecording, setIsRecording] = useState(false);
@@ -10,6 +11,40 @@ export function useAudio() {
   const ctxRef = useRef<AudioContext | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<ArrayBuffer[]>([]);
+  const nextPlayTimeRef = useRef(0);
+
+  const playChunks = useCallback((chunks: ArrayBuffer[]) => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+
+    // Merge all chunks into one Int16 buffer
+    const totalBytes = chunks.reduce((n, c) => n + c.byteLength, 0);
+    const merged = new Int16Array(totalBytes / 2);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(new Int16Array(chunk), offset);
+      offset += chunk.byteLength / 2;
+    }
+
+    // Convert Int16 → Float32
+    const float32 = new Float32Array(merged.length);
+    for (let i = 0; i < merged.length; i++) {
+      float32[i] = merged[i] / 32768;
+    }
+
+    // Create and schedule an AudioBuffer
+    const buffer = ctx.createBuffer(1, float32.length, TTS_SAMPLE_RATE);
+    buffer.copyToChannel(float32, 0);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+
+    const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+    source.start(startTime);
+    nextPlayTimeRef.current = startTime + buffer.duration;
+  }, []);
 
   const start = useCallback(async () => {
     setStatus('connecting...');
@@ -22,12 +57,27 @@ export function useAudio() {
       ws.onerror = () => reject(new Error('WebSocket failed'));
     });
 
+    ws.binaryType = 'arraybuffer';
+
+    ws.onmessage = (e: MessageEvent) => {
+      if (e.data instanceof ArrayBuffer) {
+        audioChunksRef.current.push(e.data);
+        return;
+      }
+      const msg = JSON.parse(e.data as string);
+      if (msg.type === 'interjection_end') {
+        const chunks = audioChunksRef.current.splice(0);
+        if (chunks.length > 0) playChunks(chunks);
+      }
+    };
+
     setStatus('requesting mic...');
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     streamRef.current = stream;
 
     const ctx = new AudioContext({ sampleRate: 16000 });
     ctxRef.current = ctx;
+    nextPlayTimeRef.current = 0;
 
     await ctx.audioWorklet.addModule(processorUrl);
 
@@ -54,7 +104,7 @@ export function useAudio() {
 
     setIsRecording(true);
     setStatus(`recording @ ${ctx.sampleRate} Hz`);
-  }, []);
+  }, [playChunks]);
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -63,6 +113,8 @@ export function useAudio() {
     streamRef.current = null;
     ctxRef.current = null;
     wsRef.current = null;
+    audioChunksRef.current = [];
+    nextPlayTimeRef.current = 0;
     setIsRecording(false);
     setStatus('idle');
   }, []);

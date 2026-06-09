@@ -1,3 +1,5 @@
+import { streamTTS } from './tts';
+
 interface DgSocket {
   on(event: 'message', cb: (data: unknown) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
@@ -18,7 +20,7 @@ export type SpeakerSegment = { speaker: number | null; text: string };
 export type InterjectionChecker = (
   fullTranscript: string,
   newSegments: SpeakerSegment[],
-) => Promise<string | null>;
+) => AsyncIterable<string>;
 
 export function speakerSegments(words: Word[]): SpeakerSegment[] {
   const segments: SpeakerSegment[] = [];
@@ -42,7 +44,7 @@ export function formatSegments(segments: SpeakerSegment[]): string {
 }
 
 export async function openSession(
-  ws: { send(msg: string): void },
+  ws: { send(msg: string | Buffer): void },
   createSocket: () => Promise<DgSocket>,
   checkInterjection: InterjectionChecker,
   timeoutMs = 5000,
@@ -52,6 +54,7 @@ export async function openSession(
   let fullTranscript = '';
   let pendingSegments: SpeakerSegment[] = [];
   let isSpeaking = false;
+  let abortController: AbortController | null = null;
 
   socket.on('message', (data: unknown) => {
     const msg = data as {
@@ -60,22 +63,41 @@ export async function openSession(
       is_final?: boolean;
     };
 
+    if (msg.type === 'SpeechStarted') {
+      if (isSpeaking) {
+        abortController?.abort();
+      }
+      return;
+    }
+
     if (msg.type === 'UtteranceEnd') {
       console.log('[utterance] silence detected');
       if (isSpeaking || pendingSegments.length === 0) return;
       isSpeaking = true;
+      abortController = new AbortController();
+      const { signal } = abortController;
       const batch = pendingSegments.splice(0);
-      checkInterjection(fullTranscript, batch)
-        .then(text => {
-          fullTranscript = [fullTranscript, formatSegments(batch)].filter(Boolean).join('\n');
-          if (text) {
-            fullTranscript += `\nBlaise: ${text}`;
-            console.log('[blaise]', text);
-            // TODO: TTS
+      (async () => {
+        const spoken: string[] = [];
+        try {
+          for await (const sentence of checkInterjection(fullTranscript, batch)) {
+            if (signal.aborted) break;
+            for await (const chunk of streamTTS(sentence, signal)) {
+              ws.send(chunk);
+            }
+            spoken.push(sentence);
           }
-        })
-        .catch(err => console.error('[claude] error:', err.message))
-        .finally(() => { isSpeaking = false; });
+        } catch (err) {
+          console.error('[claude] error:', (err as Error).message);
+        } finally {
+          ws.send(JSON.stringify({ type: 'interjection_end' }));
+          const parts = [fullTranscript, formatSegments(batch)];
+          if (spoken.length > 0) parts.push(`Blaise: ${spoken.join(' ')}`);
+          fullTranscript = parts.filter(Boolean).join('\n');
+          isSpeaking = false;
+          abortController = null;
+        }
+      })();
       return;
     }
 
