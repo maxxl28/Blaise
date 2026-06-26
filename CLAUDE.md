@@ -60,8 +60,4 @@ back to passively piping audio
 - Never commit directly to main
 
 ## Current focus
-Get interjection working end to end:
-1. is_final events appending to rolling transcript buffer in ws.ts
-2. Claude called on silence with buffer as context
-3. Claude response streamed to OpenAI TTS
-4. TTS audio broadcast back to browser
+Get TTS working so Claude's response is spoken back through the browser. 

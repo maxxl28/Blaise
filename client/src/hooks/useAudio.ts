@@ -4,9 +4,17 @@ import processorUrl from '../worklets/pcm-processor.js?url';
 const WS_URL = 'ws://localhost:3001';
 const TTS_SAMPLE_RATE = 24000;
 
+export type TranscriptLine = { speaker: number | null; text: string };
+export type BlaiseStatus = 'idle' | 'thinking' | 'speaking' | 'silent';
+
 export function useAudio() {
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState('idle');
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [interim, setInterim] = useState('');
+  const [replies, setReplies] = useState<string[]>([]);
+  const [blaiseStatus, setBlaiseStatus] = useState<BlaiseStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
 
   const ctxRef = useRef<AudioContext | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -17,19 +25,26 @@ export function useAudio() {
   const playChunks = useCallback((chunks: ArrayBuffer[]) => {
     const ctx = ctxRef.current;
     if (!ctx) return;
+    // A user gesture started the context, but it can suspend; make sure it's running
+    if (ctx.state === 'suspended') void ctx.resume();
 
-    // Merge all chunks into one Int16 buffer
+    // Concatenate raw bytes first — chunk boundaries can land mid-sample, so we
+    // can't treat each chunk as Int16 on its own (odd-length chunks would throw).
     const totalBytes = chunks.reduce((n, c) => n + c.byteLength, 0);
-    const merged = new Int16Array(totalBytes / 2);
+    const bytes = new Uint8Array(totalBytes);
     let offset = 0;
     for (const chunk of chunks) {
-      merged.set(new Int16Array(chunk), offset);
-      offset += chunk.byteLength / 2;
+      bytes.set(new Uint8Array(chunk), offset);
+      offset += chunk.byteLength;
     }
 
+    // Interpret the aligned byte buffer as Int16 PCM (drop a trailing odd byte)
+    const sampleCount = Math.floor(totalBytes / 2);
+    const merged = new Int16Array(bytes.buffer, 0, sampleCount);
+
     // Convert Int16 → Float32
-    const float32 = new Float32Array(merged.length);
-    for (let i = 0; i < merged.length; i++) {
+    const float32 = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) {
       float32[i] = merged[i] / 32768;
     }
 
@@ -48,6 +63,11 @@ export function useAudio() {
 
   const start = useCallback(async () => {
     setStatus('connecting...');
+    setTranscript([]);
+    setInterim('');
+    setReplies([]);
+    setBlaiseStatus('idle');
+    setError(null);
 
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -65,9 +85,32 @@ export function useAudio() {
         return;
       }
       const msg = JSON.parse(e.data as string);
-      if (msg.type === 'interjection_end') {
-        const chunks = audioChunksRef.current.splice(0);
-        if (chunks.length > 0) playChunks(chunks);
+      switch (msg.type) {
+        case 'transcript':
+          if (msg.isFinal) {
+            setTranscript(t => [...t, { speaker: msg.speaker, text: msg.text }]);
+            setInterim('');
+          } else {
+            setInterim(msg.text);
+          }
+          break;
+        case 'blaise_thinking':
+          setBlaiseStatus('thinking');
+          break;
+        case 'blaise_text':
+          setBlaiseStatus('speaking');
+          setReplies(r => [...r, msg.text]);
+          break;
+        case 'interjection_end': {
+          const chunks = audioChunksRef.current.splice(0);
+          if (chunks.length > 0) playChunks(chunks);
+          setBlaiseStatus(msg.spoke ? 'idle' : 'silent');
+          break;
+        }
+        case 'error':
+          setError(msg.message);
+          setBlaiseStatus('idle');
+          break;
       }
     };
 
@@ -117,7 +160,9 @@ export function useAudio() {
     nextPlayTimeRef.current = 0;
     setIsRecording(false);
     setStatus('idle');
+    setInterim('');
+    setBlaiseStatus('idle');
   }, []);
 
-  return { isRecording, status, start, stop };
+  return { isRecording, status, transcript, interim, replies, blaiseStatus, error, start, stop };
 }

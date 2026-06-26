@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { openSession, speakerSegments, formatSegments } from './session';
 import type { SpeakerSegment } from './session';
 
-const noop = async () => null;
+async function* noop() {}
 
 function makeMockSocket({ neverOpen = false } = {}) {
   let onMessage: ((data: unknown) => void) | undefined;
@@ -194,7 +194,7 @@ describe('openSession', () => {
   it('calls checkInterjection with pending segments on UtteranceEnd', async () => {
     const m = makeMockSocket();
     const calls: { transcript: string; segments: SpeakerSegment[] }[] = [];
-    const checker = async (t: string, s: SpeakerSegment[]) => { calls.push({ transcript: t, segments: s }); return null; };
+    async function* checker(t: string, s: SpeakerSegment[]) { calls.push({ transcript: t, segments: s }); }
 
     await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
 
@@ -211,7 +211,7 @@ describe('openSession', () => {
   it('skips UtteranceEnd when no pending segments', async () => {
     const m = makeMockSocket();
     const calls: unknown[] = [];
-    const checker = async () => { calls.push(1); return null; };
+    async function* checker() { calls.push(1); }
 
     await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
     m.emitMessage({ type: 'UtteranceEnd' });
@@ -222,13 +222,12 @@ describe('openSession', () => {
 
   it('blocks second UtteranceEnd while first is processing (speaking gate)', async () => {
     const m = makeMockSocket();
-    let resolve!: () => void;
+    let resume!: () => void;
     const calls: number[] = [];
-    const checker = async () => {
+    async function* checker() {
       calls.push(1);
-      await new Promise<void>(r => { resolve = r; });
-      return null;
-    };
+      await new Promise<void>(r => { resume = r; });
+    }
 
     await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
 
@@ -240,7 +239,7 @@ describe('openSession', () => {
     await Bun.sleep(10);
     expect(calls).toHaveLength(1); // only one call fired
 
-    resolve();
+    resume();
     await Bun.sleep(10);
     expect(calls).toHaveLength(1); // second UtteranceEnd was dropped, not queued
   });
@@ -248,7 +247,7 @@ describe('openSession', () => {
   it('accumulates fullTranscript across multiple checks', async () => {
     const m = makeMockSocket();
     const calls: string[] = [];
-    const checker = async (transcript: string) => { calls.push(transcript); return null; };
+    async function* checker(transcript: string) { calls.push(transcript); }
 
     await openSession(noopWs, () => Promise.resolve(m.socket as any), checker);
 
