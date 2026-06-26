@@ -77,20 +77,30 @@ export async function openSession(
       abortController = new AbortController();
       const { signal } = abortController;
       const batch = pendingSegments.splice(0);
+      console.log('[claude] thinking on:', formatSegments(batch));
+      ws.send(JSON.stringify({ type: 'blaise_thinking' }));
       (async () => {
         const spoken: string[] = [];
         try {
           for await (const sentence of checkInterjection(fullTranscript, batch)) {
             if (signal.aborted) break;
+            ws.send(JSON.stringify({ type: 'blaise_text', text: sentence }));
             for await (const chunk of streamTTS(sentence, signal)) {
               ws.send(chunk);
             }
             spoken.push(sentence);
           }
         } catch (err) {
-          console.error('[claude] error:', (err as Error).message);
+          if (signal.aborted) {
+            console.log('[claude] interrupted');
+          } else {
+            const message = (err as Error).message;
+            console.error('[claude] error:', message);
+            ws.send(JSON.stringify({ type: 'error', message }));
+          }
         } finally {
-          ws.send(JSON.stringify({ type: 'interjection_end' }));
+          ws.send(JSON.stringify({ type: 'interjection_end', spoke: spoken.length > 0 }));
+          console.log(spoken.length > 0 ? `[claude] spoke: ${spoken.join(' ')}` : '[claude] stayed silent');
           const parts = [fullTranscript, formatSegments(batch)];
           if (spoken.length > 0) parts.push(`Blaise: ${spoken.join(' ')}`);
           fullTranscript = parts.filter(Boolean).join('\n');
@@ -131,7 +141,9 @@ export async function openSession(
   ]);
 
   return {
-    send(data) { socket.sendMedia(data); },
+    // Mute the mic→Deepgram pipe while Blaise is speaking so he doesn't transcribe
+    // his own voice or get interrupted by the speaker's trailing audio / room noise.
+    send(data) { if (!isSpeaking) socket.sendMedia(data); },
     close() { socket.close(); },
   };
 }

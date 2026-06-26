@@ -1,3 +1,17 @@
+import type { ServerWebSocket } from 'bun';
+// Bun's `ws` rejects binaryType "blob" (Deepgram SDK v5's browser default), which
+// crashes the connection. Coerce it to "arraybuffer", which Bun accepts. Deepgram
+// sends transcripts as text frames, so this doesn't affect what we receive.
+import { WebSocket as NodeWebSocket } from 'ws';
+const binaryTypeDescriptor = Object.getOwnPropertyDescriptor(NodeWebSocket.prototype, 'binaryType');
+if (binaryTypeDescriptor?.set) {
+  Object.defineProperty(NodeWebSocket.prototype, 'binaryType', {
+    ...binaryTypeDescriptor,
+    set(value: string) {
+      binaryTypeDescriptor.set!.call(this, value === 'blob' ? 'arraybuffer' : value);
+    },
+  });
+}
 import { DeepgramClient } from '@deepgram/sdk';
 import { checkInterjection } from './claude';
 import { openSession } from './session';
